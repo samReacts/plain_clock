@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Minimal Kindle Clock</title>
+  <style>
+    /* --- Layout & base --- */
+    html,body{height:100%;margin:0;background:#ffffff;color:#000;}
+    body{display:flex;align-items:center;justify-content:center;font-family:'Courier New',Consolas,monospace;-webkit-font-smoothing:antialiased}
+
+    .app{width:100vw;max-width:100%;height:100vh;box-sizing:border-box;padding:12px;display:flex;flex-direction:column;align-items:center}
+
+    /* Top circular toggle */
+    .mode-toggle{position:fixed;left:50%;transform:translateX(-50%);top:8px;width:40px;height:40px;border-radius:50%;border:2px solid #000;display:flex;align-items:center;justify-content:center;cursor:pointer;background:#fff;font-weight:bold}
+    .mode-toggle:active{transform:translateX(-50%) scale(0.98)}
+
+    /* Clock area uses full width */
+    .clock-wrap{flex:1;display:flex;align-items:center;justify-content:center;width:100%;}
+
+    /* Digital styles */
+    .digital{display:flex;flex-direction:column;align-items:center;justify-content:center;user-select:none}
+    .time{cursor:pointer;display:flex;align-items:baseline;line-height:1}
+    .hhmm{font-size:20vw;font-weight:700;letter-spacing:0.02em}
+    .secs{font-size:10vw;margin-left:0.2em;opacity:1;transition:opacity .2s}
+    .secs.hidden{opacity:0}
+
+    /* Analog styles */
+    .analog{display:none;align-items:center;justify-content:center}
+    canvas{max-width:100%;height:auto}
+
+    /* Date block (always visible below clocks) */
+    .date-block{width:100%;text-align:center;margin-bottom:8px}
+    .dayname{font-size:4vw;font-weight:700;letter-spacing:0.06em;margin-top:6px}
+    .daynum{font-size:6vw;font-weight:700}
+    .year{font-size:3vw;margin-top:4px}
+
+    /* Mode visible state */
+    .mode-analog .analog{display:flex}
+    .mode-analog .digital{display:none}
+    .mode-digital .digital{display:flex}
+    .mode-digital .analog{display:none}
+
+    /* Small accessibility helpers */
+    .sr-only{position:absolute!important;height:1px;width:1px;overflow:hidden;clip:rect(1px,1px,1px,1px);white-space:nowrap}
+
+    /* Keep everything crisp on low-res e-ink */
+    *{ -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility }
+
+  </style>
+</head>
+<body class="mode-digital">
+  <div class="mode-toggle" id="modeToggle" title="Toggle Clock Mode" aria-pressed="false">C</div>
+
+  <div class="app" role="application" aria-label="Kindle clock">
+    <div class="clock-wrap">
+      <div class="digital" id="digital">
+        <div class="time" id="timeBtn" title="Click to toggle seconds">
+          <div class="hhmm" id="hhmm">00:00</div>
+          <div class="secs" id="secs">:00</div>
+        </div>
+      </div>
+
+      <div class="analog" id="analog">
+        <canvas id="clockCanvas" aria-label="Analog clock" role="img"></canvas>
+      </div>
+    </div>
+
+    <div class="date-block" aria-live="polite">
+      <div class="daynum" id="daynum">01/01</div>
+      <div class="year" id="year">2025</div>
+      <div class="dayname" id="dayname">WEDNESDAY</div>
+    </div>
+  </div>
+
+  <script>
+    // Minimal, efficient clock logic for e-ink devices.
+    (function(){
+      const body = document.body;
+      const modeToggle = document.getElementById('modeToggle');
+      const timeBtn = document.getElementById('timeBtn');
+      const hhmmEl = document.getElementById('hhmm');
+      const secsEl = document.getElementById('secs');
+      const daynumEl = document.getElementById('daynum');
+      const yearEl = document.getElementById('year');
+      const daynameEl = document.getElementById('dayname');
+      const canvas = document.getElementById('clockCanvas');
+      const ctx = canvas.getContext && canvas.getContext('2d');
+
+      let showSeconds = true;
+      let mode = 'digital'; // 'digital' or 'analog'
+      let timer = null;
+
+      function pad(n){return n<10? '0'+n: ''+n}
+
+      function updateDate(now){
+        const d = pad(now.getDate());
+        const m = pad(now.getMonth()+1);
+        daynumEl.textContent = d + '/' + m;
+        yearEl.textContent = now.getFullYear();
+        daynameEl.textContent = now.toLocaleDateString(undefined,{weekday:'long'}).toUpperCase();
+      }
+
+      function updateDigital(now){
+        const hh = pad(now.getHours());
+        const mm = pad(now.getMinutes());
+        const ss = ':'+pad(now.getSeconds());
+        hhmmEl.textContent = hh + ':' + mm;
+        secsEl.textContent = ss;
+        secsEl.classList.toggle('hidden', !showSeconds);
+      }
+
+      function drawAnalog(now){
+        if(!ctx) return;
+        const DPR = window.devicePixelRatio || 1;
+        const size = Math.min(window.innerWidth - 24, window.innerHeight - 140);
+        const sz = Math.max(80, size|0);
+        canvas.width = sz * DPR;
+        canvas.height = sz * DPR;
+        canvas.style.width = sz + 'px';
+        canvas.style.height = sz + 'px';
+        ctx.setTransform(DPR,0,0,DPR,0,0);
+
+        const cx = sz/2, cy = sz/2, r = sz/2 - 6;
+
+        // Clear
+        ctx.clearRect(0,0,sz,sz);
+
+        // Outer circle
+        ctx.beginPath();
+        ctx.arc(cx,cy,r,0,Math.PI*2);
+        ctx.lineWidth = Math.max(2, Math.floor(sz*0.03));
+        ctx.strokeStyle = '#000';
+        ctx.stroke();
+
+        // hour marks
+        for(let i=0;i<12;i++){
+          const ang = (i/12) * Math.PI*2;
+          const x1 = cx + Math.cos(ang) * (r - sz*0.07);
+          const y1 = cy + Math.sin(ang) * (r - sz*0.07);
+          const x2 = cx + Math.cos(ang) * (r - sz*0.02);
+          const y2 = cy + Math.sin(ang) * (r - sz*0.02);
+          ctx.lineWidth = Math.max(1, Math.floor(sz*0.01));
+          ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+        }
+
+        // Calculate angles
+        const sec = now.getSeconds();
+        const min = now.getMinutes() + sec/60;
+        const hr = (now.getHours()%12) + min/60;
+        const secAng = (sec/60) * Math.PI*2 - Math.PI/2;
+        const minAng = (min/60) * Math.PI*2 - Math.PI/2;
+        const hrAng  = (hr/12) * Math.PI*2 - Math.PI/2;
+
+        // Draw hour hand
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(cx,cy);
+        ctx.lineTo(cx + Math.cos(hrAng) * (r * 0.5), cy + Math.sin(hrAng) * (r * 0.5));
+        ctx.lineWidth = Math.max(3, Math.floor(sz*0.04));
+        ctx.strokeStyle = '#000';
+        ctx.stroke();
+
+        // Draw minute hand
+        ctx.beginPath();
+        ctx.moveTo(cx,cy);
+        ctx.lineTo(cx + Math.cos(minAng) * (r * 0.75), cy + Math.sin(minAng) * (r * 0.75));
+        ctx.lineWidth = Math.max(2, Math.floor(sz*0.03));
+        ctx.strokeStyle = '#000';
+        ctx.stroke();
+
+        // Draw second hand (red - note: e-ink can't display color but code sets red)
+        ctx.beginPath();
+        ctx.moveTo(cx,cy);
+        ctx.lineTo(cx + Math.cos(secAng) * (r * 0.85), cy + Math.sin(secAng) * (r * 0.85));
+        ctx.lineWidth = Math.max(1, Math.floor(sz*0.015));
+        ctx.strokeStyle = 'red';
+        ctx.stroke();
+
+        // center dot
+        ctx.beginPath(); ctx.arc(cx,cy, Math.max(3, sz*0.02), 0, Math.PI*2); ctx.fillStyle = '#000'; ctx.fill();
+      }
+
+      function refresh(){
+        const now = new Date();
+        updateDate(now);
+        if(mode === 'digital'){
+          updateDigital(now);
+        } else {
+          drawAnalog(now);
+        }
+      }
+
+      // Efficient timer: update every second only if seconds visible OR in analog mode; otherwise update at the start of each minute
+      function scheduleTimer(){
+        if(timer) { clearInterval(timer); timer = null }
+        const needsSecondRefresh = showSeconds || mode === 'analog';
+        if(needsSecondRefresh){
+          timer = setInterval(refresh, 1000);
+        } else {
+          // align to next minute to reduce refreshes
+          const now = new Date();
+          const msToNext = (60 - now.getSeconds())*1000 - now.getMilliseconds();
+          timer = setTimeout(function(){ refresh(); scheduleTimer(); }, msToNext);
+        }
+      }
+
+      // Toggle handlers
+      modeToggle.addEventListener('click', function(){
+        if(mode === 'digital'){ mode = 'analog'; body.classList.remove('mode-digital'); body.classList.add('mode-analog'); modeToggle.setAttribute('aria-pressed','true'); }
+        else { mode = 'digital'; body.classList.remove('mode-analog'); body.classList.add('mode-digital'); modeToggle.setAttribute('aria-pressed','false'); }
+        refresh(); scheduleTimer();
+      });
+
+      timeBtn.addEventListener('click', function(){
+        showSeconds = !showSeconds; secsEl.classList.toggle('hidden', !showSeconds); scheduleTimer();
+      });
+
+      // initial sizing and draw
+      window.addEventListener('resize', function(){ if(mode==='analog') drawAnalog(new Date()); });
+
+      // boot
+      refresh(); scheduleTimer();
+
+      // Try to reduce reflows on e-ink by avoiding heavy DOM changes in the loop
+    })();
+  </script>
+</body>
+</html>
