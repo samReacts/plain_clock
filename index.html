@@ -23,7 +23,7 @@
     .time{cursor:pointer;display:flex;align-items:baseline;line-height:1}
     .hhmm{font-size:20vw;font-weight:700;letter-spacing:0.02em}
     .secs{font-size:10vw;margin-left:0.2em;opacity:1;transition:opacity .2s}
-    .secs.hidden{opacity:0}
+    .secs.hidden{display:none}
 
     /* Analog styles */
     .analog{display:none;align-items:center;justify-content:center}
@@ -75,6 +75,7 @@
 
   <script>
     // Minimal, efficient clock logic for e-ink devices.
+    // UPDATED: use Asia/Kolkata timezone (IST) via Intl to avoid Kindle/device timezone mismatch.
     (function(){
       const body = document.body;
       const modeToggle = document.getElementById('modeToggle');
@@ -90,21 +91,54 @@
       let showSeconds = true;
       let mode = 'digital'; // 'digital' or 'analog'
       let timer = null;
+      const TZ = 'Asia/Kolkata'; // Force India time (IST)
+
+      // Build a lightweight "now" object using Intl.formatToParts for a specific timezone
+      function nowInTZ(tz){
+        // We request numeric parts we need; this avoids creating a Date from a string which can be flaky.
+        const fmt = new Intl.DateTimeFormat('en-GB', {
+          timeZone: tz,
+          hour12: false,
+          year: 'numeric',
+          month: 'numeric',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: 'numeric',
+          second: 'numeric',
+          weekday: 'long'
+        });
+
+        const parts = fmt.formatToParts(new Date());
+        const obj = {};
+        for(const p of parts){
+          if(p.type && p.value != null) obj[p.type] = p.value;
+        }
+        // Convert numeric strings to numbers where appropriate
+        return {
+          year: parseInt(obj.year,10),
+          month: parseInt(obj.month,10),
+          day: parseInt(obj.day,10),
+          hours: parseInt(obj.hour,10),
+          minutes: parseInt(obj.minute,10),
+          seconds: parseInt(obj.second,10),
+          weekday: (obj.weekday || '').toUpperCase()
+        };
+      }
 
       function pad(n){return n<10? '0'+n: ''+n}
 
       function updateDate(now){
-        const d = pad(now.getDate());
-        const m = pad(now.getMonth()+1);
+        const d = pad(now.day);
+        const m = pad(now.month);
         daynumEl.textContent = d + '/' + m;
-        yearEl.textContent = now.getFullYear();
-        daynameEl.textContent = now.toLocaleDateString(undefined,{weekday:'long'}).toUpperCase();
+        yearEl.textContent = now.year;
+        daynameEl.textContent = now.weekday;
       }
 
       function updateDigital(now){
-        const hh = pad(now.getHours());
-        const mm = pad(now.getMinutes());
-        const ss = ':'+pad(now.getSeconds());
+        const hh = pad(now.hours);
+        const mm = pad(now.minutes);
+        const ss = ':'+pad(now.seconds);
         hhmmEl.textContent = hh + ':' + mm;
         secsEl.textContent = ss;
         secsEl.classList.toggle('hidden', !showSeconds);
@@ -144,10 +178,10 @@
           ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
         }
 
-        // Calculate angles
-        const sec = now.getSeconds();
-        const min = now.getMinutes() + sec/60;
-        const hr = (now.getHours()%12) + min/60;
+        // Calculate angles (use parts from now object)
+        const sec = now.seconds;
+        const min = now.minutes + sec/60;
+        const hr = (now.hours % 12) + min/60;
         const secAng = (sec/60) * Math.PI*2 - Math.PI/2;
         const minAng = (min/60) * Math.PI*2 - Math.PI/2;
         const hrAng  = (hr/12) * Math.PI*2 - Math.PI/2;
@@ -182,7 +216,7 @@
       }
 
       function refresh(){
-        const now = new Date();
+        const now = nowInTZ(TZ);
         updateDate(now);
         if(mode === 'digital'){
           updateDigital(now);
@@ -193,14 +227,14 @@
 
       // Efficient timer: update every second only if seconds visible OR in analog mode; otherwise update at the start of each minute
       function scheduleTimer(){
-        if(timer) { clearInterval(timer); timer = null }
+        if(timer) { if(typeof timer === 'number') clearInterval(timer); else clearTimeout(timer); timer = null }
         const needsSecondRefresh = showSeconds || mode === 'analog';
         if(needsSecondRefresh){
           timer = setInterval(refresh, 1000);
         } else {
           // align to next minute to reduce refreshes
-          const now = new Date();
-          const msToNext = (60 - now.getSeconds())*1000 - now.getMilliseconds();
+          const now = nowInTZ(TZ);
+          const msToNext = (60 - now.seconds) * 1000; // rough alignment; acceptable for e-ink
           timer = setTimeout(function(){ refresh(); scheduleTimer(); }, msToNext);
         }
       }
@@ -217,7 +251,10 @@
       });
 
       // initial sizing and draw
-      window.addEventListener('resize', function(){ if(mode==='analog') drawAnalog(new Date()); });
+      window.addEventListener('resize', function(){ if(mode==='analog') {
+        // redraw based on the forced timezone
+        drawAnalog(nowInTZ(TZ));
+      }});
 
       // boot
       refresh(); scheduleTimer();
